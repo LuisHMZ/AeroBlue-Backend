@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import joblib
 import pandas as pd
+import math
+import random
 
 # 1. Inicializamos la aplicación
 app = FastAPI(
@@ -66,4 +68,62 @@ def predecir_pm25(datos: DatosAtmosfericos):
         "pm25_calculado": round(resultado, 2),
         "alerta_contingencia": alerta,
         "zona": "GAM (Zacatenco)"
+    }
+
+# 6. NUEVA RUTA: Generador de proyecciones para las gráficas de Flutter
+@app.post("/api/pronostico_graficas/")
+def pronostico_graficas(datos: DatosAtmosfericos):
+    global modelo, columnas_requeridas
+
+    if modelo is None:
+        return {"error": "El modelo de Machine Learning no está cargado."}
+
+    escenarios_climaticos = []
+
+    # === A. CREAR MATRIZ DE 24 HORAS ===
+    for hora in range(24):
+        variacion_temp = math.sin(hora / 24.0 * math.pi) * 5.0
+        pico_trafico = 1.3 if hora in [8, 9, 18, 19, 20] else 1.0
+
+        escenarios_climaticos.append({
+            "NO2": datos.NO2 * pico_trafico,
+            "O3": datos.O3,
+            "PM10": datos.PM10 * pico_trafico,
+            "PMCO": datos.PMCO,
+            "RH": datos.RH,
+            "TMP": datos.TMP + variacion_temp,
+            "WDR": datos.WDR,
+            "WSP": datos.WSP
+        })
+
+    # === B. CREAR MATRIZ DE 3 SEMANAS (21 DÍAS) ===
+    for dia in range(21):
+        escenarios_climaticos.append({
+            "NO2": datos.NO2 * random.uniform(0.9, 1.2),
+            "O3": datos.O3 * random.uniform(0.8, 1.1),
+            "PM10": datos.PM10 * random.uniform(0.9, 1.3),
+            "PMCO": datos.PMCO * random.uniform(0.9, 1.2),
+            "RH": datos.RH * random.uniform(0.8, 1.1),
+            "TMP": datos.TMP * random.uniform(0.8, 1.1),
+            "WDR": datos.WDR,
+            "WSP": datos.WSP
+        })
+
+    # Convertimos a DataFrame de Pandas
+    df_futuro = pd.DataFrame(escenarios_climaticos)
+
+    # CRÍTICO: Ordenamos las columnas exactamente como lo exige tu archivo .pkl
+    df_futuro = df_futuro[columnas_requeridas]
+
+    # Predicción masiva superrápida (45 filas al mismo tiempo)
+    predicciones = modelo.predict(df_futuro)
+    resultados = [round(float(p), 1) for p in predicciones]
+
+    return {
+        "hoy": resultados[0:24],
+        "mes": {
+            "Semana 2 del mes": resultados[24:31],
+            "Semana 3 del mes": resultados[31:38],
+            "Semana 4 del mes": resultados[38:45],
+        }
     }
