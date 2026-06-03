@@ -70,7 +70,7 @@ def predecir_pm25(datos: DatosAtmosfericos):
         "zona": "GAM (Zacatenco)"
     }
 
-# 6. NUEVA RUTA: Generador de proyecciones para las gráficas de Flutter
+# 6. RUTA PARA GRÁFICAS (EVOLUCIÓN Y PRONÓSTICO EXTENDIDO)
 @app.post("/api/pronostico_graficas/")
 def pronostico_graficas(datos: DatosAtmosfericos):
     global modelo, columnas_requeridas
@@ -125,5 +125,52 @@ def pronostico_graficas(datos: DatosAtmosfericos):
             "Semana 2 del mes": resultados[24:31],
             "Semana 3 del mes": resultados[31:38],
             "Semana 4 del mes": resultados[38:45],
+        }
+    }
+
+# 7. NUEVA RUTA: GENERADOR DETERMINISTA DE HISTORIAL
+@app.get("/api/historico/{fecha}")
+def obtener_historico(fecha: str):
+    """
+    Endpoint para simular el historial de calidad del aire de un día específico.
+    Utiliza la fecha como semilla para garantizar que siempre devuelva la misma
+    curva al consultar el mismo día, imitando el comportamiento de una base de datos.
+    """
+    # La clave de la magia: Semilla basada en el texto de la fecha (Ej. "2026-06-03")
+    random.seed(fecha)
+
+    pm25_data = []
+    pm10_data = []
+    o3_data = []
+
+    # Generamos un nivel de contaminación base para ese día (entre excelente y moderado)
+    base_pm25 = random.uniform(8.0, 25.0)
+
+    for hora in range(24):
+        # Curva natural: Menos contaminación en madrugada, picos en el día
+        variacion = math.sin((hora - 6) / 24.0 * math.pi) * 15.0
+        ruido = random.uniform(-2.0, 2.0)
+        
+        # Calculamos el valor final asegurando que nunca sea negativo o irreal
+        val_pm25 = max(5.0, base_pm25 + variacion + ruido)
+
+        # Generamos los otros dos contaminantes proporcionalmente al PM2.5
+        pm25_data.append(round(val_pm25, 1))
+        pm10_data.append(round(val_pm25 * random.uniform(1.2, 1.8), 1))
+        o3_data.append(round(val_pm25 * random.uniform(0.5, 0.9), 1))
+
+    # Reseteamos la semilla aleatoria para no afectar otras funciones del servidor
+    random.seed()
+
+    # Estructura JSON para la pantalla de Análisis Histórico de Flutter
+    return {
+        "fecha": fecha,
+        "pm25": pm25_data,
+        "pm10": pm10_data,
+        "o3": o3_data,
+        "estadisticas": {
+            "promedio": round(sum(pm25_data) / 24, 1),
+            "maximo": round(max(pm25_data), 1),
+            "minimo": round(min(pm25_data), 1)
         }
     }
