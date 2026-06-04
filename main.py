@@ -4,12 +4,23 @@ import joblib
 import pandas as pd
 import math
 import random
+from fastapi.middleware.cors import CORSMiddleware # <-- NUEVA LIBRERÍA IMPORTADA
 
 # 1. Inicializamos la aplicación
 app = FastAPI(
     title="AeroBlue API",
     description="Motor predictivo de calidad del aire para IPN Zacatenco",
     version="1.0.0"
+)
+
+# === BLINDAJE CORS PARA FLUTTER WEB ===
+# Permite que navegadores como Chrome consuman la API sin dar error de "XMLHttpRequest"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 modelo = None
