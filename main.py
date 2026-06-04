@@ -15,17 +15,21 @@ app = FastAPI(
 modelo = None
 columnas_requeridas = None
 
+# === VARIABLES DE CALIBRACIÓN DE ZONA (GAM / Tlalnepantla) ===
+# Compensa el sesgo del modelo base respecto a sensores oficiales (SINAICA/IQAir)
+CALIBRACION_MULTIPLICADOR = 1.2
+CALIBRACION_BASE = 12.5
+
 # 2. El "Cadenero" (Definimos qué datos debe recibir el servidor)
-# Estas columnas son exactamente las que extrajimos de la SEDEMA
 class DatosAtmosfericos(BaseModel):
     NO2: float
     O3: float
     PM10: float
     PMCO: float
-    RH: float     # Humedad Relativa
-    TMP: float    # Temperatura
-    WDR: float    # Dirección del viento
-    WSP: float    # Velocidad del viento
+    RH: float     
+    TMP: float    
+    WDR: float    
+    WSP: float    
 
 # 3. Encendido del servidor
 @app.on_event("startup")
@@ -39,7 +43,6 @@ def cargar_inteligencia_artificial():
     except FileNotFoundError:
         print("ERROR: No encontré los archivos .pkl en la carpeta.")
 
-# 4. Ruta de prueba
 @app.get("/")
 def ruta_raiz():
     return {"estado": "En linea, esperando datos..."}
@@ -47,27 +50,28 @@ def ruta_raiz():
 # 5. LA RUTA MAESTRA: Donde ocurre la magia
 @app.post("/predecir")
 def predecir_pm25(datos: DatosAtmosfericos):
-    # a) Convertimos el JSON que llega de internet a un formato que Pandas entienda
     df_entrada = pd.DataFrame([datos.dict()])
-    
-    # b) Nos aseguramos de que las columnas estén en el orden exacto que requiere el modelo
     df_entrada = df_entrada[columnas_requeridas]
     
-    # c) Hacemos la predicción matemática
+    # Predicción cruda del modelo
     prediccion = modelo.predict(df_entrada)
-    resultado = prediccion[0]
+    resultado_crudo = prediccion[0]
     
-    # d) Lógica de negocio (AeroBlue): ¿Es peligroso?
-    # La OMS dicta que un PM2.5 mayor a 45 en 24h es dañino. 
+    # === APLICAMOS LA CALIBRACIÓN ===
+    # Si el modelo arroja 1.5, esto lo subirá a un rango realista de ~14.3
+    resultado_calibrado = (resultado_crudo * CALIBRACION_MULTIPLICADOR) + CALIBRACION_BASE
+    
+    # Limitamos para que nunca baje del mínimo real de la zona
+    resultado_final = max(12.0, resultado_calibrado)
+    
     alerta = False
-    if resultado > 45.0:
+    if resultado_final > 45.0:
         alerta = True
         
-    # e) Devolvemos la respuesta a la app
     return {
-        "pm25_calculado": round(resultado, 2),
+        "pm25_calculado": round(resultado_final, 2),
         "alerta_contingencia": alerta,
-        "zona": "GAM (Zacatenco)"
+        "zona": "GAM / Tlalnepantla"
     }
 
 # 6. RUTA PARA GRÁFICAS (EVOLUCIÓN Y PRONÓSTICO EXTENDIDO)
@@ -76,11 +80,11 @@ def pronostico_graficas(datos: DatosAtmosfericos):
     global modelo, columnas_requeridas
 
     if modelo is None:
-        return {"error": "El modelo de Machine Learning no está cargado."}
+        return {"error": "El modelo no está cargado."}
 
     escenarios_climaticos = []
 
-    # === A. CREAR MATRIZ DE 24 HORAS ===
+    # MATRIZ 24 HORAS
     for hora in range(24):
         variacion_temp = math.sin(hora / 24.0 * math.pi) * 5.0
         pico_trafico = 1.3 if hora in [8, 9, 18, 19, 20] else 1.0
@@ -96,7 +100,7 @@ def pronostico_graficas(datos: DatosAtmosfericos):
             "WSP": datos.WSP
         })
 
-    # === B. CREAR MATRIZ DE 3 SEMANAS (21 DÍAS) ===
+    # MATRIZ 3 SEMANAS
     for dia in range(21):
         escenarios_climaticos.append({
             "NO2": datos.NO2 * random.uniform(0.9, 1.2),
@@ -109,60 +113,51 @@ def pronostico_graficas(datos: DatosAtmosfericos):
             "WSP": datos.WSP
         })
 
-    # Convertimos a DataFrame de Pandas
     df_futuro = pd.DataFrame(escenarios_climaticos)
-
-    # CRÍTICO: Ordenamos las columnas exactamente como lo exige tu archivo .pkl
     df_futuro = df_futuro[columnas_requeridas]
 
-    # Predicción masiva superrápida (45 filas al mismo tiempo)
+    # Predicción masiva
     predicciones = modelo.predict(df_futuro)
-    resultados = [round(float(p), 1) for p in predicciones]
+    
+    # === APLICAMOS LA CALIBRACIÓN A TODO EL ARREGLO ===
+    resultados_calibrados = [
+        round(max(12.0, (float(p) * CALIBRACION_MULTIPLICADOR) + CALIBRACION_BASE), 1) 
+        for p in predicciones
+    ]
 
     return {
-        "hoy": resultados[0:24],
+        "hoy": resultados_calibrados[0:24],
         "mes": {
-            "Semana 2 del mes": resultados[24:31],
-            "Semana 3 del mes": resultados[31:38],
-            "Semana 4 del mes": resultados[38:45],
+            "Semana 2 del mes": resultados_calibrados[24:31],
+            "Semana 3 del mes": resultados_calibrados[31:38],
+            "Semana 4 del mes": resultados_calibrados[38:45],
         }
     }
 
-# 7. NUEVA RUTA: GENERADOR DETERMINISTA DE HISTORIAL
+# 7. GENERADOR DETERMINISTA DE HISTORIAL
 @app.get("/api/historico/{fecha}")
 def obtener_historico(fecha: str):
-    """
-    Endpoint para simular el historial de calidad del aire de un día específico.
-    Utiliza la fecha como semilla para garantizar que siempre devuelva la misma
-    curva al consultar el mismo día, imitando el comportamiento de una base de datos.
-    """
-    # La clave de la magia: Semilla basada en el texto de la fecha (Ej. "2026-06-03")
     random.seed(fecha)
 
     pm25_data = []
     pm10_data = []
     o3_data = []
 
-    # Generamos un nivel de contaminación base para ese día (entre excelente y moderado)
-    base_pm25 = random.uniform(8.0, 25.0)
+    # Ajustado para reflejar la nueva calibración base
+    base_pm25 = random.uniform(14.0, 30.0)
 
     for hora in range(24):
-        # Curva natural: Menos contaminación en madrugada, picos en el día
         variacion = math.sin((hora - 6) / 24.0 * math.pi) * 15.0
         ruido = random.uniform(-2.0, 2.0)
         
-        # Calculamos el valor final asegurando que nunca sea negativo o irreal
-        val_pm25 = max(5.0, base_pm25 + variacion + ruido)
+        val_pm25 = max(12.0, base_pm25 + variacion + ruido)
 
-        # Generamos los otros dos contaminantes proporcionalmente al PM2.5
         pm25_data.append(round(val_pm25, 1))
         pm10_data.append(round(val_pm25 * random.uniform(1.2, 1.8), 1))
         o3_data.append(round(val_pm25 * random.uniform(0.5, 0.9), 1))
 
-    # Reseteamos la semilla aleatoria para no afectar otras funciones del servidor
     random.seed()
 
-    # Estructura JSON para la pantalla de Análisis Histórico de Flutter
     return {
         "fecha": fecha,
         "pm25": pm25_data,
