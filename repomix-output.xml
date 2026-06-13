@@ -1,13 +1,76 @@
-from fastapi import FastAPI, Depends # <-- NUEVO: Depends para inyectar la DB
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+.gitignore
+columnas_aeroblue.pkl
+main.py
+modelo_aeroblue_entrenado.pkl
+requirements.txt
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path=".gitignore">
+__pycache__/
+*.pyc
+</file>
+
+<file path="requirements.txt">
+fastapi
+uvicorn
+scikit-learn
+pandas
+joblib
+</file>
+
+<file path="main.py">
+from fastapi import FastAPI
 from pydantic import BaseModel
 import joblib
 import pandas as pd
 import math
 import random
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session # <-- NUEVO
-from sqlalchemy import text # <-- NUEVO
-from database import get_db # <-- NUEVO: Importamos el puente a Neon.tech
+from fastapi.middleware.cors import CORSMiddleware # <-- NUEVA LIBRERÍA IMPORTADA
 
 # 1. Inicializamos la aplicación
 app = FastAPI(
@@ -17,6 +80,7 @@ app = FastAPI(
 )
 
 # === BLINDAJE CORS PARA FLUTTER WEB ===
+# Permite que navegadores como Chrome consuman la API sin dar error de "XMLHttpRequest"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -28,6 +92,8 @@ app.add_middleware(
 modelo = None
 columnas_requeridas = None
 
+# === VARIABLES DE CALIBRACIÓN DE ZONA (GAM / Tlalnepantla) ===
+# Compensa el sesgo del modelo base respecto a sensores oficiales (SINAICA/IQAir)
 CALIBRACION_MULTIPLICADOR = 1.2
 CALIBRACION_BASE = 12.5
 
@@ -41,13 +107,6 @@ class DatosAtmosfericos(BaseModel):
     TMP: float    
     WDR: float    
     WSP: float    
-
-# === NUEVO CADENERO: Para recibir datos médicos desde Flutter ===
-class ReporteSalud(BaseModel):
-    sintoma: str
-    pm25_al_momento: float
-    latitud: float = None
-    longitud: float = None
 
 # 3. Encendido del servidor
 @app.on_event("startup")
@@ -67,7 +126,7 @@ def ruta_raiz():
 
 # 5. LA RUTA MAESTRA: Donde ocurre la magia
 @app.post("/predecir")
-def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-- NUEVO: Se inyecta la conexión a Neon
+def predecir_pm25(datos: DatosAtmosfericos):
     df_entrada = pd.DataFrame([datos.dict()])
     df_entrada = df_entrada[columnas_requeridas]
     
@@ -76,30 +135,15 @@ def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-
     resultado_crudo = prediccion[0]
     
     # === APLICAMOS LA CALIBRACIÓN ===
+    # Si el modelo arroja 1.5, esto lo subirá a un rango realista de ~14.3
     resultado_calibrado = (resultado_crudo * CALIBRACION_MULTIPLICADOR) + CALIBRACION_BASE
+    
+    # Limitamos para que nunca baje del mínimo real de la zona
     resultado_final = max(12.0, resultado_calibrado)
     
     alerta = False
     if resultado_final > 45.0:
         alerta = True
-
-    # === NUEVO: GUARDADO SILENCIOSO EN NEON (DATA FLYWHEEL) ===
-    # Guarda la predicción actual en la base de datos sin interrumpir al usuario
-    try:
-        sql = text("""
-            INSERT INTO historial_predicciones 
-            (pm25_predicho, temperatura, humedad) 
-            VALUES (:pm25, :temp, :hum)
-        """)
-        db.execute(sql, {
-            "pm25": round(resultado_final, 2),
-            "temp": datos.TMP,
-            "hum": datos.RH
-        })
-        db.commit()
-    except Exception as e:
-        print(f"Error guardando historial de BD: {e}")
-        db.rollback() # Previene que la base de datos se bloquee si hay error
         
     return {
         "pm25_calculado": round(resultado_final, 2),
@@ -107,29 +151,7 @@ def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-
         "zona": "GAM / Tlalnepantla"
     }
 
-# === 6. NUEVA RUTA: RECOPILADOR DE SÍNTOMAS (CROWDSOURCING) ===
-@app.post("/api/reporte-salud")
-def guardar_reporte_salud(reporte: ReporteSalud, db: Session = Depends(get_db)):
-    try:
-        sql = text("""
-            INSERT INTO reportes_salud_usuarios 
-            (usuario_id, sintoma, pm25_al_momento, latitud, longitud) 
-            VALUES (:uid, :sintoma, :pm25, :lat, :lon)
-        """)
-        db.execute(sql, {
-            "uid": "usuario_local", # <-- Esto lo cambiaremos por el ID de Firebase en la fase 2
-            "sintoma": reporte.sintoma,
-            "pm25": reporte.pm25_al_momento,
-            "lat": reporte.latitud,
-            "lon": reporte.longitud
-        })
-        db.commit()
-        return {"estatus": "ok", "mensaje": "Síntomas guardados correctamente en la nube"}
-    except Exception as e:
-        db.rollback()
-        return {"estatus": "error", "detalle": str(e)}
-
-# 7. RUTA PARA GRÁFICAS (EVOLUCIÓN Y PRONÓSTICO EXTENDIDO)
+# 6. RUTA PARA GRÁFICAS (EVOLUCIÓN Y PRONÓSTICO EXTENDIDO)
 @app.post("/api/pronostico_graficas/")
 def pronostico_graficas(datos: DatosAtmosfericos):
     global modelo, columnas_requeridas
@@ -189,7 +211,7 @@ def pronostico_graficas(datos: DatosAtmosfericos):
         }
     }
 
-# 8. GENERADOR DETERMINISTA DE HISTORIAL
+# 7. GENERADOR DETERMINISTA DE HISTORIAL
 @app.get("/api/historico/{fecha}")
 def obtener_historico(fecha: str):
     random.seed(fecha)
@@ -224,3 +246,6 @@ def obtener_historico(fecha: str):
             "minimo": round(min(pm25_data), 1)
         }
     }
+</file>
+
+</files>
