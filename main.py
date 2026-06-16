@@ -1,13 +1,13 @@
-from fastapi import FastAPI, Depends # <-- NUEVO: Depends para inyectar la DB
+from fastapi import FastAPI, Depends 
 from pydantic import BaseModel
 import joblib
 import pandas as pd
 import math
 import random
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session # <-- NUEVO
-from sqlalchemy import text # <-- NUEVO
-from database import get_db # <-- NUEVO: Importamos el puente a Neon.tech
+from sqlalchemy.orm import Session 
+from sqlalchemy import text 
+from database import get_db 
 
 # 1. Inicializamos la aplicación
 app = FastAPI(
@@ -42,12 +42,19 @@ class DatosAtmosfericos(BaseModel):
     WDR: float    
     WSP: float    
 
-# === NUEVO CADENERO: Para recibir datos médicos desde Flutter ===
 class ReporteSalud(BaseModel):
     sintoma: str
     pm25_al_momento: float
     latitud: float = None
     longitud: float = None
+
+# === NUEVOS CADENEROS: Para los reportes de fallas de la App ===
+class ReporteFallaCreate(BaseModel):
+    descripcion: str
+    dispositivo: str
+
+class ActualizarEstadoRequest(BaseModel):
+    estado: str
 
 # 3. Encendido del servidor
 @app.on_event("startup")
@@ -67,7 +74,7 @@ def ruta_raiz():
 
 # 5. LA RUTA MAESTRA: Donde ocurre la magia
 @app.post("/predecir")
-def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-- NUEVO: Se inyecta la conexión a Neon
+def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): 
     df_entrada = pd.DataFrame([datos.dict()])
     df_entrada = df_entrada[columnas_requeridas]
     
@@ -83,8 +90,7 @@ def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-
     if resultado_final > 45.0:
         alerta = True
 
-    # === NUEVO: GUARDADO SILENCIOSO EN NEON (DATA FLYWHEEL) ===
-    # Guarda la predicción actual en la base de datos sin interrumpir al usuario
+    # === GUARDADO SILENCIOSO EN NEON (DATA FLYWHEEL) ===
     try:
         sql = text("""
             INSERT INTO historial_predicciones 
@@ -99,7 +105,7 @@ def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-
         db.commit()
     except Exception as e:
         print(f"Error guardando historial de BD: {e}")
-        db.rollback() # Previene que la base de datos se bloquee si hay error
+        db.rollback() 
         
     return {
         "pm25_calculado": round(resultado_final, 2),
@@ -107,7 +113,7 @@ def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): # <-
         "zona": "GAM / Tlalnepantla"
     }
 
-# === 6. NUEVA RUTA: RECOPILADOR DE SÍNTOMAS (CROWDSOURCING) ===
+# 6. RECOPILADOR DE SÍNTOMAS (CROWDSOURCING MÉDICO)
 @app.post("/api/reporte-salud")
 def guardar_reporte_salud(reporte: ReporteSalud, db: Session = Depends(get_db)):
     try:
@@ -117,7 +123,7 @@ def guardar_reporte_salud(reporte: ReporteSalud, db: Session = Depends(get_db)):
             VALUES (:uid, :sintoma, :pm25, :lat, :lon)
         """)
         db.execute(sql, {
-            "uid": "usuario_local", # <-- Esto lo cambiaremos por el ID de Firebase en la fase 2
+            "uid": "usuario_local", 
             "sintoma": reporte.sintoma,
             "pm25": reporte.pm25_al_momento,
             "lat": reporte.latitud,
@@ -129,7 +135,64 @@ def guardar_reporte_salud(reporte: ReporteSalud, db: Session = Depends(get_db)):
         db.rollback()
         return {"estatus": "error", "detalle": str(e)}
 
-# 7. RUTA PARA GRÁFICAS (EVOLUCIÓN Y PRONÓSTICO EXTENDIDO)
+# === 7. NUEVO: RUTAS PARA GESTIÓN DE FALLAS Y SOPORTE ===
+
+# A) Ruta para que Flutter ENVÍE el reporte a Neon
+@app.post("/api/reportes", status_code=201)
+def crear_reporte_falla(reporte: ReporteFallaCreate, db: Session = Depends(get_db)):
+    try:
+        sql = text("""
+            INSERT INTO reportes_fallas (descripcion, dispositivo)
+            VALUES (:desc, :disp)
+        """)
+        db.execute(sql, {
+            "desc": reporte.descripcion,
+            "disp": reporte.dispositivo
+        })
+        db.commit()
+        return {"estatus": "ok", "mensaje": "Reporte de falla enviado exitosamente a la base de datos."}
+    except Exception as e:
+        db.rollback()
+        return {"estatus": "error", "detalle": str(e)}
+
+# B) Ruta para que tu FUTURA WEB LEA la lista de reportes
+@app.get("/api/reportes")
+def obtener_reportes(db: Session = Depends(get_db)):
+    try:
+        # Traemos todo ordenado del más nuevo al más viejo
+        sql = text("SELECT id, fecha, descripcion, dispositivo, estado FROM reportes_fallas ORDER BY fecha DESC")
+        resultados = db.execute(sql).fetchall()
+        
+        # Formateamos los resultados para devolver un JSON limpio
+        reportes = []
+        for fila in resultados:
+            reportes.append({
+                "id": fila[0],
+                "fecha": fila[1],
+                "descripcion": fila[2],
+                "dispositivo": fila[3],
+                "estado": fila[4]
+            })
+        return {"estatus": "ok", "datos": reportes}
+    except Exception as e:
+        return {"estatus": "error", "detalle": str(e)}
+
+# C) Ruta para que tu FUTURA WEB ACTUALICE el estado (ej. "Resuelto")
+@app.put("/api/reportes/{reporte_id}")
+def actualizar_reporte(reporte_id: int, request: ActualizarEstadoRequest, db: Session = Depends(get_db)):
+    try:
+        sql = text("UPDATE reportes_fallas SET estado = :estado WHERE id = :id")
+        db.execute(sql, {
+            "estado": request.estado, 
+            "id": reporte_id
+        })
+        db.commit()
+        return {"estatus": "ok", "mensaje": f"Reporte {reporte_id} actualizado a estado: {request.estado}"}
+    except Exception as e:
+        db.rollback()
+        return {"estatus": "error", "detalle": str(e)}
+
+# 8. RUTA PARA GRÁFICAS (EVOLUCIÓN Y PRONÓSTICO EXTENDIDO)
 @app.post("/api/pronostico_graficas/")
 def pronostico_graficas(datos: DatosAtmosfericos):
     global modelo, columnas_requeridas
@@ -139,7 +202,6 @@ def pronostico_graficas(datos: DatosAtmosfericos):
 
     escenarios_climaticos = []
 
-    # MATRIZ 24 HORAS
     for hora in range(24):
         variacion_temp = math.sin(hora / 24.0 * math.pi) * 5.0
         pico_trafico = 1.3 if hora in [8, 9, 18, 19, 20] else 1.0
@@ -155,7 +217,6 @@ def pronostico_graficas(datos: DatosAtmosfericos):
             "WSP": datos.WSP
         })
 
-    # MATRIZ 3 SEMANAS
     for dia in range(21):
         escenarios_climaticos.append({
             "NO2": datos.NO2 * random.uniform(0.9, 1.2),
@@ -171,10 +232,8 @@ def pronostico_graficas(datos: DatosAtmosfericos):
     df_futuro = pd.DataFrame(escenarios_climaticos)
     df_futuro = df_futuro[columnas_requeridas]
 
-    # Predicción masiva
     predicciones = modelo.predict(df_futuro)
     
-    # === APLICAMOS LA CALIBRACIÓN A TODO EL ARREGLO ===
     resultados_calibrados = [
         round(max(12.0, (float(p) * CALIBRACION_MULTIPLICADOR) + CALIBRACION_BASE), 1) 
         for p in predicciones
@@ -189,7 +248,7 @@ def pronostico_graficas(datos: DatosAtmosfericos):
         }
     }
 
-# 8. GENERADOR DETERMINISTA DE HISTORIAL
+# 9. GENERADOR DETERMINISTA DE HISTORIAL
 @app.get("/api/historico/{fecha}")
 def obtener_historico(fecha: str):
     random.seed(fecha)
@@ -198,7 +257,6 @@ def obtener_historico(fecha: str):
     pm10_data = []
     o3_data = []
 
-    # Ajustado para reflejar la nueva calibración base
     base_pm25 = random.uniform(14.0, 30.0)
 
     for hora in range(24):
@@ -223,4 +281,7 @@ def obtener_historico(fecha: str):
             "maximo": round(max(pm25_data), 1),
             "minimo": round(min(pm25_data), 1)
         }
-    }
+    }#para el comit 
+    #
+    #
+    #xd
