@@ -1,3 +1,5 @@
+import os
+from dotenv import load_dotenv
 from fastapi import FastAPI, Depends 
 from pydantic import BaseModel
 import joblib
@@ -23,7 +25,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)#para le comit dejao xd 
+)
 
 modelo = None
 columnas_requeridas = None
@@ -73,7 +75,8 @@ def ruta_raiz():
     return {"estado": "En linea, esperando datos..."}
 
 # 5. LA RUTA MAESTRA: Donde ocurre la magia
-@app.post("/predecir")
+# ✅ CORREGIDO: Agregamos /api/ para que coincida perfectamente con Flutter y evitar el 404
+@app.post("/api/predecir")
 def predecir_pm25(datos: DatosAtmosfericos, db: Session = Depends(get_db)): 
     df_entrada = pd.DataFrame([datos.dict()])
     df_entrada = df_entrada[columnas_requeridas]
@@ -281,7 +284,4 @@ def obtener_historico(fecha: str):
             "maximo": round(max(pm25_data), 1),
             "minimo": round(min(pm25_data), 1)
         }
-    }#para el comit 
-    #
-    #
-    #xd
+    }
