@@ -23,7 +23,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-)
+)#para le comit dejao xd 
 
 modelo = None
 columnas_requeridas = None
